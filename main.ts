@@ -19,9 +19,9 @@ ETmbit/general
 /*
  * IMPORTANT NOTE
  * ==============
- * A player robot should call AT THE START OF EACH CALL OR LOOP:
- *  'if (!Match.isPlaying()) return'
- * This assures a quick reponse to match messages.
+ * A player model should call AT THE START OF EACH ROUTINE AND LOOP:
+ *  'if (!Match.isPlaying() || Match.isHalted()) return'
+ * This assures a quick reponse to various match conditions.
  */
 
 
@@ -50,42 +50,23 @@ enum MatchMessage {
     DisqualBlue
 }
 
-enum WaitFor {
-    None = 0x0000,
-    InField = 0x0001,
-    OnBorder = 0x0002,
-    OutOfField = 0x0004,
-    NoTrace = 0x0008,
-    Traced = 0x0010,
-    Far = 0x0020,
-    Near = 0x0040,
-    CamNoTrace = 0x0080,
-    CamTraced = 0x0100,
-    CamFar = 0x0200,
-    CamNear = 0x0400,
-    OppHeading = 0x0800,
-    All = 0xFFFF,
-}
+// a depended extension MUST implement 'initHandler'
+let initHandler: handler
 
-let initHandler: handler      // initializes and resets a model
-let freezeHandler: handler    // freezes a robot
-let playHandler: handler      // (re)starts playing
+// see the HALT HANDSHAKING for an explanation of how
+// the next handlers interact
+let playHandler: handler
+let freezeHandler: handler
+let inFieldHandler: handler
+let toFieldHandler: handler
+
+// optional
 let showHandler: handler      // shows extra player information
 let pointHandler: handler     // user code by onPoint
 let winnerHandler: handler    // user code by onWinner
 
-let isInFieldHandler: rethandler        // must return 0/1 for 'robot is on the border'
-let isOnBorderHandler: rethandler       // must return 0/1 for 'robot is on the border'
-let isOutOfFieldHandler: rethandler     // must return 0/1 for 'robot is outside the field'
-let hasTracedHandler: rethandler        // must return 0/1 for 'object traced'
-let hasNoTraceHandler: rethandler       // must return 0/1 for 'object not traced'
-let isFarHandler: rethandler            // must return 0/1 for 'object is far away'
-let isNearHandler: rethandler           // must return 0/1 for 'object is near'
-let camHasTracedHandler: rethandler     // must return 0/1 for 'object traced'
-let camHasNoTraceHandler: rethandler    // must return 0/1 for 'object not traced'
-let camIsFarHandler: rethandler         // must return 0/1 for 'object is far away'
-let camIsNearHandler: rethandler        // must return 0/1 for 'object is near'
-let isHeadingToOppHandler: rethandler   // must return 0/1 for 'heading to opponent'
+let EThalted = false
+let ETnoplay = false
 
 let ETmatchMsg: MatchMessage = MatchMessage.Reset
 let ETprevMatchMsg: MatchMessage = MatchMessage.Reset
@@ -93,10 +74,6 @@ let ETplayer: Player = Player.Green
 let ETpointsGreen: number = 0
 let ETpointsBlue: number = 0
 let ETarbiter: number = -1
-
-
-//##### ETmbit/General handlers #####//
-
 
 function display_points() {
     basic.showNumber(ETplayer == Player.Green ? ETpointsGreen : ETpointsBlue)
@@ -106,9 +83,11 @@ function display_player() {
     basic.showString(ETplayer == Player.Green ? "G" : "B")
 }
 
+//##### ETmbit/General handlers #####//
+
 function startHandler() {
     ETplayer = (ETplayer == Player.Green ? Player.Blue : Player.Green)
-    initHandler()
+    if (initHandler) initHandler()
     display_player()
     if (showHandler) showHandler()
 }
@@ -190,140 +169,89 @@ function messageHandler(message: string) {
 }
 General.registerMessageHandler("MA", messageHandler)
 
+//##### Match status machine #####//
 
-//##### Match handling #####//
+/*
+IMPORTANT:
+==========
+1)
+It is advisded that a dependend extension implements
+the 'inFieldHandler' to detect the out-of-field status
+of a model. Then it should call 'setOutOfField'
 
+2)
+It is obligated that all routines of a dependend extension 
+implement 'if (!Match.isPlaying() || Match.isHalted() ) return'
+as the first code line of the routine and
+as the first code line of each loop
 
+3)
+It is advised that a dependend extension implements
+the 'freezeHandler' to freeze the model when it is halted.
+
+4)
+It is advised that a dependend extension implements
+the 'toFieldHandler' to let the model return to the field.
+
+5)
+A dependend extension may call 'forceHalting' to invoke the
+halt handshaking.
+
+HALT HANDSHAKING:
+=================
+HALT LOOP detects 'EThalted' flag, see remark 1) and 5)
+HALT LOOP sets the 'ETnoplay' flag
+HALT LOOP waits for 'EThalted' to be reset
+PLAY LOOP finishes : all routines abort, see remark 2)
+PLAY LOOP resets the 'EThalted' flag *)
+PLAY LOOP waits for 'ETnoplay' to be reset
+HALT LOOP calls the 'freezeHandler', see remark 3)
+HALT LOOP calls the 'toFieldHandler', see remark 4)
+HALT LOOP resets the 'ETnoplay' flag
+PLAY LOOP restarts
+
+*) Needed, otherwise the routines of the 'toFieldHandler'
+will be blocked.
+*/
+
+// PLAY LOOP
+basic.forever(function () {
+    if (!Match.isPlaying() || ETnoplay) return
+    if (playHandler) playHandler()
+    EThalted = false
+})
+
+// HALT LOOP
 basic.forever(function () {
     if (!Match.isPlaying()) return
-    let mayplay = true
-    if (isOutOfFieldHandler) mayplay = (isOutOfFieldHandler() == 0)
-    if (mayplay) {
-        if (playHandler) playHandler()
+    if (inFieldHandler) inFieldHandler()
+    if (EThalted) {
+        ETnoplay = true
+        while (EThalted) pause(1)
+        if (freezeHandler) freezeHandler() // freezes the robot
+        if (toFieldHandler) toFieldHandler() // return to the field
+        ETnoplay = false
+        return
     }
-    else {
-        if (freezeHandler) freezeHandler()
-    }
-
 })
+
+//##### Match namespace #####//
 
 //% color="#00CC00" icon="\uf091"
 //% block="Match"
 //% block.loc.nl="Wedstrijd"
 namespace Match {
 
-    let waitingFor: number = 0  // WaitFor reasons to stop the Match.waitFor() routine
-    let waitingEnd: number = 0  // WaitFor reason that stopped the Match.waitFor() routine
-
-    export function registerWaitFor(waitfor: WaitFor, code: () => number) {
-        switch (waitfor) {
-            case WaitFor.InField: isInFieldHandler = code; break
-            case WaitFor.OnBorder: isOnBorderHandler = code; break
-            case WaitFor.OutOfField: isOutOfFieldHandler = code; break
-            case WaitFor.NoTrace: hasNoTraceHandler = code; break
-            case WaitFor.Traced: hasTracedHandler = code; break
-            case WaitFor.Far: isFarHandler = code; break
-            case WaitFor.Near: isNearHandler = code; break
-            case WaitFor.CamNoTrace: camHasNoTraceHandler = code; break
-            case WaitFor.CamTraced: camHasTracedHandler = code; break
-            case WaitFor.CamFar: camIsFarHandler = code; break
-            case WaitFor.CamNear: camIsNearHandler = code; break
-            case WaitFor.OppHeading: isHeadingToOppHandler = code; break
-        }
+    export function isHalted(): boolean {
+        return EThalted
     }
 
-    export function waitFor() {
-        waitingEnd = WaitFor.None
-        while (true) {
-            if (!isPlaying()) return
-            if (waitingFor & WaitFor.InField) {
-                if (isInFieldHandler && (isInFieldHandler() == 1)) {
-                    waitingEnd = WaitFor.InField
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.OnBorder) {
-                if (isOnBorderHandler && (isOnBorderHandler() == 1)) {
-                    waitingEnd = WaitFor.OnBorder
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.OutOfField) {
-                waitingEnd = WaitFor.OutOfField
-                if (isOutOfFieldHandler && (isOutOfFieldHandler() == 1)) {
-                    waitingEnd = WaitFor.OutOfField
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.NoTrace) {
-                if (hasNoTraceHandler && (hasNoTraceHandler() == 1)) {
-                    waitingEnd = WaitFor.NoTrace
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.Traced) {
-                if (hasTracedHandler && (hasTracedHandler() == 1)) {
-                    waitingEnd = WaitFor.Traced
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.Far) {
-                if (isFarHandler && (isFarHandler() == 1)) {
-                    waitingEnd = WaitFor.Far
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.Near) {
-                if (isNearHandler && (isNearHandler() == 1)) {
-                    waitingEnd = WaitFor.Near
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.CamNoTrace) {
-                if (camHasNoTraceHandler && (camHasNoTraceHandler() == 1)) {
-                    waitingEnd = WaitFor.CamNoTrace
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.CamTraced) {
-                if (camHasTracedHandler && (camHasTracedHandler() == 1)) {
-                    waitingEnd = WaitFor.CamTraced
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.CamFar) {
-                if (camIsFarHandler && (camIsFarHandler() == 1)) {
-                    waitingEnd = WaitFor.CamFar
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.CamNear) {
-                if (camIsNearHandler && (camIsNearHandler() == 1)) {
-                    waitingEnd = WaitFor.CamNear
-                    return
-                }
-            }
-            if (waitingFor & WaitFor.OppHeading) {
-                if (isHeadingToOppHandler && (isHeadingToOppHandler() == 1)) {
-                    waitingEnd = WaitFor.OppHeading
-                    return
-                }
-            }
-            basic.pause(1)
-        }
+    export function forceHalting() {
+        EThalted = true
     }
 
-    export function setWaitingFor(waitfor: WaitFor) {
-        waitingFor |= waitfor
-    }
-
-    export function clearWaitFor(waitfor: WaitFor) {
-        if (waitingFor & waitfor)
-            waitingFor &= ~waitfor
-    }
-
-    export function isWaitEnd(waitfor: WaitFor): boolean {
-        return ((waitingEnd & waitfor) != 0)
+    export function setOutOfField() {
+        EThalted = true
     }
 
     //% block="the opponent"
