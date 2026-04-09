@@ -5,7 +5,7 @@
         "core": "*",
         "radio": "*",
         "microphone": "*",
-        "general": "github:etmbit/general#222cc3da61513d31c00939685f59bec5c02247e5"
+        "general": "github:etmbit/general#7914af0454dda5bab93b12f1dbe20a8f3779b520"
     },
     "files": [
         "main.blocks",
